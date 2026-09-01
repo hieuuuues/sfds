@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nhận Diện Bàn Tay AI - Đếm Ngón Tay Thông Minh</title>
+  
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Font Awesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  
+  <!-- MediaPipe Hands & Camera Utils -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+  <style>
+    @keyframes pulse-glow {
+      0%, 100% { transform: scale(1); filter: drop-shadow(0 0 15px rgba(59, 130, 246, 0.6)); }
+      50% { transform: scale(1.04); filter: drop-shadow(0 0 30px rgba(99, 102, 241, 0.9)); }
+    }
+    .animate-glow {
+      animation: pulse-glow 2s infinite ease-in-out;
+    }
+    .glassmorphism {
+      background: rgba(17, 24, 39, 0.75);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .mirror-video {
+      transform: scaleX(-1);
+    }
+    /* Custom scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #111827;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #374151;
+      border-radius: 9999px;
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col font-sans selection:bg-indigo-500 selection:text-white">
+
+  <!-- Header -->
+  <header class="w-full border-b border-slate-800/80 bg-slate-900/60 backdrop-blur sticky top-0 z-30">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center shadow-lg shadow-indigo-500/30">
+          <i class="fa-solid fa-hand text-white text-lg"></i>
+        </div>
+        <div>
+          <h1 class="font-bold text-lg sm:text-xl bg-gradient-to-r from-indigo-400 via-purple-300 to-pink-400 bg-clip-text text-transparent">
+            AI Hand Tracker
+          </h1>
+          <p class="text-xs text-slate-400">Nhận diện cử chỉ & Đếm ngón tay AI</p>
+        </div>
+      </div>
+
+      <!-- Controls on Header -->
+      <div class="flex items-center space-x-2 sm:space-x-3">
+        <!-- Sound Toggle -->
+        <button id="soundToggleBtn" class="p-2.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white transition border border-slate-700 text-sm flex items-center gap-1.5" title="Bật/Tắt âm thanh hiệu ứng">
+          <i class="fa-solid fa-volume-high text-indigo-400" id="soundIcon"></i>
+          <span class="hidden sm:inline text-xs font-medium">Âm thanh</span>
+        </button>
+
+        <!-- FPS / Status Badge -->
+        <div class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700 text-xs font-medium">
+          <span class="w-2 h-2 rounded-full bg-amber-400 animate-ping" id="statusDot"></span>
+          <span id="statusText" class="text-slate-300">Đang tải AI...</span>
+          <span id="fpsBadge" class="hidden text-indigo-400 font-mono pl-1 border-l border-slate-700">0 FPS</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content Layout -->
+  <main class="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+    
+    <!-- Left Column: Camera Feed & Skeleton Canvas (7 cols) -->
+    <div class="lg:col-span-7 flex flex-col gap-4">
+      <div class="relative w-full aspect-[4/3] sm:aspect-video rounded-2xl overflow-hidden glassmorphism shadow-2xl border border-slate-800/80 flex items-center justify-center bg-black">
+        
+        <!-- Webcam Video (Hidden or mirrored directly behind canvas) -->
+        <video id="webcam" class="absolute inset-0 w-full h-full object-cover mirror-video" autoplay muted playsinline></video>
+        
+        <!-- Canvas for landmarks overlay -->
+        <canvas id="canvasOverlay" class="absolute inset-0 w-full h-full object-cover mirror-video pointer-events-none z-10"></canvas>
+
+        <!-- Loading Overlay -->
+        <div id="loadingScreen" class="absolute inset-0 bg-slate-950/90 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center z-20 transition-opacity duration-300">
+          <div class="w-16 h-16 relative flex items-center justify-center mb-4">
+            <div class="absolute inset-0 rounded-full border-4 border-indigo-500/20"></div>
+            <div class="w-16 h-16 rounded-full border-4 border-indigo-500 border-t-transparent animate-spin"></div>
+            <i class="fa-solid fa-hand text-indigo-400 text-xl absolute"></i>
+          </div>
+          <h3 class="text-lg font-semibold text-white mb-1">Đang khởi động Camera & AI</h3>
+          <p class="text-sm text-slate-400 max-w-sm">Vui lòng cấp quyền truy cập webcam trên trình duyệt của bạn...</p>
+        </div>
+
+        <!-- Camera Permission Error UI -->
+        <div id="errorScreen" class="hidden absolute inset-0 bg-slate-950/95 flex flex-col items-center justify-center p-6 text-center z-20">
+          <div class="w-16 h-16 rounded-full bg-rose-500/10 border border-rose-500/30 flex items-center justify-center mb-4 text-rose-400 text-2xl">
+            <i class="fa-solid fa-video-slash"></i>
+          </div>
+          <h3 class="text-lg font-bold text-white mb-2">Không thể truy cập Camera</h3>
+          <p id="errorMessage" class="text-sm text-slate-300 max-w-md mb-5">Vui lòng kiểm tra quyền camera hoặc đảm bảo không có ứng dụng nào khác đang sử dụng camera.</p>
+          <button onclick="startApp()" class="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-sm transition shadow-lg shadow-indigo-600/30 flex items-center gap-2">
+            <i class="fa-solid fa-rotate-right"></i> Thử lại
+          </button>
+        </div>
+
+        <!-- Quick Overlays on Camera -->
+        <div class="absolute top-4 left-4 z-20 flex gap-2">
+          <div class="px-3 py-1.5 rounded-lg bg-black/60 backdrop-blur border border-white/10 text-xs font-mono text-emerald-400 flex items-center gap-1.5">
+            <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+            <span id="detectedHandLabel">Chờ bàn tay...</span>
+          </div>
+        </div>
+
+        <!-- Canvas Settings Toggle (Bottom Bar inside Camera) -->
+        <div class="absolute bottom-4 inset-x-4 z-20 flex justify-between items-center">
+          <div class="flex gap-2">
+            <button id="toggleSkeletonBtn" class="px-3 py-1.5 rounded-lg bg-black/60 hover:bg-black/80 backdrop-blur border border-white/10 text-xs text-slate-200 transition flex items-center gap-1.5">
+              <i class="fa-solid fa-bone text-indigo-400"></i>
+              <span id="skeletonText">Khung xương: Bật</span>
+            </button>
+            <button id="toggleMirrorBtn" class="px-3 py-1.5 rounded-lg bg-black/60 hover:bg-black/80 backdrop-blur border border-white/10 text-xs text-slate-200 transition flex items-center gap-1.5">
+              <i class="fa-solid fa-arrows-left-right text-pink-400"></i>
+              <span>Lật gương</span>
+            </button>
+          </div>
+          <button id="cameraRestartBtn" class="p-2 rounded-lg bg-black/60 hover:bg-black/80 backdrop-blur border border-white/10 text-xs text-slate-300 transition" title="Khởi động lại Camera">
+            <i class="fa-solid fa-arrow-rotate-right"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- Quick Instruction Hint -->
+      <div class="glassmorphism rounded-xl p-3.5 flex items-center gap-3 border border-slate-800 text-xs text-slate-300">
+        <div class="p-2 rounded-lg bg-indigo-500/10 text-indigo-400">
+          <i class="fa-solid fa-lightbulb text-base"></i>
+        </div>
+        <div>
+          <span class="font-semibold text-slate-200">Mẹo tương tác:</span> 
+          Đưa bàn tay vào giữa khung hình, xòe hoặc co các ngón tay. Thử giơ <strong class="text-indigo-400">1 ngón</strong> (ngón trỏ), <strong class="text-indigo-400">2 ngón</strong> (chữ V), giơ <strong class="text-indigo-400">ngón cái (Like)</strong> hoặc <strong class="text-indigo-400">OK</strong>!
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Column: Recognition Result & Finger State (5 cols) -->
+    <div class="lg:col-span-5 flex flex-col gap-4">
+      
+      <!-- Big Number Display Card -->
+      <div class="glassmorphism rounded-2xl p-6 border border-slate-800/80 flex flex-col items-center justify-center text-center relative overflow-hidden shadow-xl">
+        <!-- Background Ambient Glow -->
+        <div id="ambientGlow" class="absolute -top-24 -right-24 w-60 h-60 bg-indigo-500/20 rounded-full blur-3xl pointer-events-none transition-all duration-700"></div>
+
+        <span class="text-xs uppercase tracking-widest font-bold text-slate-400 mb-1">
+          Số ngón tay nhận diện
+        </span>
+
+        <!-- HUGE NUMBER -->
+        <div class="my-2 relative flex items-center justify-center">
+          <div id="bigNumber" class="text-8xl sm:text-9xl font-black text-transparent bg-clip-text bg-gradient-to-b from-indigo-300 via-indigo-400 to-purple-500 font-mono tracking-tighter drop-shadow-lg transition-all duration-200 scale-100">
+            0
+          </div>
+        </div>
+
+        <!-- Gesture Label Badge -->
+        <div id="gestureBadge" class="mt-1 px-4 py-1.5 rounded-full bg-indigo-500/20 border border-indigo-500/40 text-indigo-300 text-sm font-semibold flex items-center gap-2 transition-all">
+          <span id="gestureIcon"><i class="fa-regular fa-hand-back-fist"></i></span>
+          <span id="gestureName">Nắm tay (0 ngón)</span>
+        </div>
+
+        <p id="gestureMeaning" class="text-xs text-slate-400 mt-2 min-h-[1.25rem]">
+          Hãy giơ ngón tay trước camera để bắt đầu
+        </p>
+      </div>
+
+      <!-- Detail Finger Status Grid -->
+      <div class="glassmorphism rounded-2xl p-5 border border-slate-800/80 shadow-lg">
+        <h3 class="text-xs uppercase tracking-wider font-semibold text-slate-400 mb-3 flex items-center justify-between">
+          <span>Trạng thái từng ngón</span>
+          <span class="text-[11px] font-normal text-slate-500">Tự động phát hiện</span>
+        </h3>
+
+        <div class="grid grid-cols-5 gap-2" id="fingersContainer">
+          <!-- Thumb -->
+          <div id="fingerCard-thumb" class="flex flex-col items-center p-2.5 rounded-xl bg-slate-900/80 border border-slate-800 transition-all duration-200">
+            <span class="text-xs text-slate-400 font-medium mb-1">Cái</span>
+            <div class="finger-dot w-3 h-3 rounded-full bg-slate-700 transition-all duration-200"></div>
+            <i class="fa-solid fa-thumbs-up mt-2 text-slate-500 text-sm"></i>
+          </div>
+
+          <!-- Index -->
+          <div id="fingerCard-index" class="flex flex-col items-center p-2.5 rounded-xl bg-slate-900/80 border border-slate-800 transition-all duration-200">
+            <span class="text-xs text-slate-400 font-medium mb-1">Trỏ</span>
+            <div class="finger-dot w-3 h-3 rounded-full bg-slate-700 transition-all duration-200"></div>
+            <i class="fa-solid fa-hand-point-up mt-2 text-slate-500 text-sm"></i>
+          </div>
+
+          <!-- Middle -->
+          <div id="fingerCard-middle" class="flex flex-col items-center p-2.5 rounded-xl bg-slate-900/80 border border-slate-800 transition-all duration-200">
+            <span class="text-xs text-slate-400 font-medium mb-1">Giữa</span>
+            <div class="finger-dot w-3 h-3 rounded-full bg-slate-700 transition-all duration-200"></div>
+            <i class="fa-solid fa-hand-pointer mt-2 text-slate-500 text-sm"></i>
+          </div>
+
+          <!-- Ring -->
+          <div id="fingerCard-ring" class="flex flex-col items-center p-2.5 rounded-xl bg-slate-900/80 border border-slate-800 transition-all duration-200">
+            <span class="text-xs text-slate-400 font-medium mb-1">Áp út</span>
+            <div class="finger-dot w-3 h-3 rounded-full bg-slate-700 transition-all duration-200"></div>
+            <i class="fa-regular fa-hand mt-2 text-slate-500 text-sm"></i>
+          </div>
+
+          <!-- Pinky -->
+          <div id="fingerCard-pinky" class="flex flex-col items-center p-2.5 rounded-xl bg-slate-900/80 border border-slate-800 transition-all duration-200">
+            <span class="text-xs text-slate-400 font-medium mb-1">Út</span>
+            <div class="finger-dot w-3 h-3 rounded-full bg-slate-700 transition-all duration-200"></div>
+            <i class="fa-solid fa-hand-sparkles mt-2 text-slate-500 text-sm"></i>
+          </div>
+        </div>
+      </div>
+
+      <!-- Gesture Cheat Sheet / Fun Gestures -->
+      <div class="glassmorphism rounded-2xl p-4 border border-slate-800/80">
+        <h4 class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2.5">Cử chỉ đặc biệt được hỗ trợ</h4>
+        <div class="grid grid-cols-2 gap-2 text-xs">
+          <div class="p-2 rounded-lg bg-slate-900/60 border border-slate-800 flex items-center gap-2">
+            <span class="text-lg">☝️</span>
+            <div>
+              <div class="font-medium text-slate-200">1 ngón (Trỏ)</div>
+              <div class="text-[11px] text-slate-400">Số 1 / Chỉ điểm</div>
+            </div>
+          </div>
+          <div class="p-2 rounded-lg bg-slate-900/60 border border-slate-800 flex items-center gap-2">
+            <span class="text-lg">✌️</span>
+            <div>
+              <div class="font-medium text-slate-200">2 ngón (V-sign)</div>
+              <div class="text-[11px] text-slate-400">Số 2 / Hòa bình</div>
+            </div>
+          </div>
+          <div class="p-2 rounded-lg bg-slate-900/60 border border-slate-800 flex items-center gap-2">
+            <span class="text-lg">👍</span>
+            <div>
+              <div class="font-medium text-slate-200">Ngón cái (Like)</div>
+              <div class="text-[11px] text-slate-400">Tuyệt vời!</div>
+            </div>
+          </div>
+          <div class="p-2 rounded-lg bg-slate-900/60 border border-slate-800 flex items-center gap-2">
+            <span class="text-lg">👌</span>
+            <div>
+              <div class="font-medium text-slate-200">Dấu OK</div>
+              <div class="text-[11px] text-slate-400">Đồng ý / Hoàn hảo</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer class="mt-auto border-t border-slate-800/60 py-3 text-center text-xs text-slate-500">
+    Ứng dụng xử lý mô hình AI hoàn toàn trên trình duyệt của bạn bằng MediaPipe & WebAssembly • Bảo mật 100% hình ảnh
+  </footer>
+
+  <!-- Application Logic -->
+  <script>
+    // --- Application State ---
+    let camera = null;
+    let hands = null;
+    let isMirrored = true;
+    let showSkeleton = true;
+    let soundEnabled = true;
+    let lastFingerCount = -1;
+    let lastGesture = "";
+    
+    // FPS Calculation
+    let lastTime = performance.now();
+    let frameCount = 0;
+    let fps = 0;
+
+    // --- DOM Elements ---
+    const videoElement = document.getElementById('webcam');
+    const canvasElement = document.getElementById('canvasOverlay');
+    const canvasCtx = canvasElement.getContext('2d');
+    const loadingScreen = document.getElementById('loadingScreen');
+    const errorScreen = document.getElementById('errorScreen');
+    const errorMessage = document.getElementById('errorMessage');
+    const statusText = document.getElementById('statusText');
+    const statusDot = document.getElementById('statusDot');
+    const fpsBadge = document.getElementById('fpsBadge');
+    
+    const bigNumberEl = document.getElementById('bigNumber');
+    const gestureBadgeEl = document.getElementById('gestureBadge');
+    const gestureNameEl = document.getElementById('gestureName');
+    const gestureIconEl = document.getElementById('gestureIcon');
+    const gestureMeaningEl = document.getElementById('gestureMeaning');
+    const detectedHandLabel = document.getElementById('detectedHandLabel');
+    const ambientGlow = document.getElementById('ambientGlow');
+    
+    const soundToggleBtn = document.getElementById('soundToggleBtn');
+    const soundIcon = document.getElementById('soundIcon');
+    const toggleSkeletonBtn = document.getElementById('toggleSkeletonBtn');
+    const skeletonText = document.getElementById('skeletonText');
+    const toggleMirrorBtn = document.getElementById('toggleMirrorBtn');
+    const cameraRestartBtn = document.getElementById('cameraRestartBtn');
+
+    const fingerCards = {
+      thumb: document.getElementById('fingerCard-thumb'),
+      index: document.getElementById('fingerCard-index'),
+      middle: document.getElementById('fingerCard-middle'),
+      ring: document.getElementById('fingerCard-ring'),
+      pinky: document.getElementById('fingerCard-pinky')
+    };
+
+    // --- Web Audio API Synthesizer for Audio Feedback ---
+    let audioCtx = null;
+
+    function playTone(freq = 440, type = 'sine', duration = 0.12) {
+      if (!soundEnabled) return;
+      try {
+        if (!audioCtx) {
+          audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (audioCtx.state === 'suspended') {
+          audioCtx.resume();
+        }
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+        
+        // Smooth fade out
+        gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+
+        osc.start();
+        osc.stop(audioCtx.currentTime + duration);
+      } catch (e) {
+        console.warn("Audio playback not allowed yet:", e);
+      }
+    }
+
+    function playCountSound(count) {
+      const frequencies = [261.63, 329.63, 392.00, 523.25, 659.25, 783.99]; // C4, E4, G4, C5, E5, G5
+      const note = frequencies[Math.min(count, frequencies.length - 1)] || 440;
+      playTone(note, 'triangle', 0.15);
+    }
+
+    // --- Distance helper ---
+    function getDistance(p1, p2) {
+      const dx = p1.x - p2.x;
+      const dy = p1.y - p2.y;
+      const dz = (p1.z || 0) - (p2.z || 0);
+      return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    // --- Finger Detection Algorithm ---
+    function analyzeHand(landmarks, handedness) {
+      // Landmark indices:
+      // Wrist: 0
+      // Thumb: 1, 2, 3, 4 (tip)
+      // Index: 5, 6, 7, 8 (tip)
+      // Middle: 9, 10, 11, 12 (tip)
+      // Ring: 13, 14, 15, 16 (tip)
+      // Pinky: 17, 18, 19, 20 (tip)
+
+      const wrist = landmarks[0];
+      const isRightHand = handedness === 'Right';
+
+      // Status of each finger: true = open/raised, false = folded
+      const state = {
+        thumb: false,
+        index: false,
+        middle: false,
+        ring: false,
+        pinky: false
+      };
+
+      // 1. Index, Middle, Ring, Pinky: check if Tip distance from wrist > PIP distance from wrist
+      // AND tip.y is above PIP.y (in screen space y goes downwards)
+      const indexTip = landmarks[8], indexPip = landmarks[6], indexMcp = landmarks[5];
+      const middleTip = landmarks[12], middlePip = landmarks[10], middleMcp = landmarks[9];
+      const ringTip = landmarks[16], ringPip = landmarks[14], ringMcp = landmarks[13];
+      const pinkyTip = landmarks[20], pinkyPip = landmarks[18], pinkyMcp = landmarks[17];
+      const thumbTip = landmarks[4], thumbIp = landmarks[3], thumbMcp = landmarks[2];
+
+      state.index = getDistance(indexTip, wrist) > getDistance(indexPip, wrist) && indexTip.y < indexPip.y;
+      state.middle = getDistance(middleTip, wrist) > getDistance(middlePip, wrist) && middleTip.y < middlePip.y;
+      state.ring = getDistance(ringTip, wrist) > getDistance(ringPip, wrist) && ringTip.y < ringPip.y;
+      state.pinky = getDistance(pinkyTip, wrist) > getDistance(pinkyPip, wrist) && pinkyTip.y < pinkyPip.y;
+
+      // 2. Thumb logic:
+      // Distance from thumb tip to pinky MCP compared to thumb IP to pinky MCP
+      const thumbDistToPinkyMCP = getDistance(thumbTip, pinkyMcp);
+      const thumbIpDistToPinkyMCP = getDistance(thumbIp, pinkyMcp);
+      const thumbDistToWrist = getDistance(thumbTip, wrist);
+      const thumbMcpDistToWrist = getDistance(thumbMcp, wrist);
+
+      // Extended if tip is farther from palm base/pinky
+      state.thumb = (thumbDistToPinkyMCP > thumbIpDistToPinkyMCP * 1.15) && (thumbDistToWrist > thumbMcpDistToWrist * 1.1);
+
+      // Count total raised fingers
+      let count = 0;
+      if (state.thumb) count++;
+      if (state.index) count++;
+      if (state.middle) count++;
+      if (state.ring) count++;
+      if (state.pinky) count++;
+
+      // Gesture Recognition Nuances
+      let gesture = "";
+      let gestureName = "";
+      let gestureMeaning = "";
+      let gestureIcon = "fa-hand";
+
+      // Check for specific gestures:
+      const okDist = getDistance(thumbTip, indexTip);
+      const isOK = (okDist < 0.08) && state.middle && state.ring && state.pinky;
+      const isThumbsUp = state.thumb && !state.index && !state.middle && !state.ring && !state.pinky && (thumbTip.y < thumbMcp.y);
+      const isRock = state.index && state.pinky && !state.middle && !state.ring;
+      const isPeace = state.index && state.middle && !state.ring && !state.pinky;
+      const isOne = state.index && !state.middle && !state.ring && !state.pinky && !state.thumb;
+
+      if (isOK) {
+        gesture = "OK";
+        gestureName = "Dấu OK 👌";
+        gestureMeaning = "Tuyệt vời / Hoàn hảo / Đồng ý!";
+        gestureIcon = "fa-circle-check";
+        count = 3; // 3 fingers up in OK
+      } else if (isThumbsUp) {
+        gesture = "THUMBS_UP";
+        gestureName = "Like 👍 (Số 1)";
+        gestureMeaning = "Số 1 / Tuyệt vời / Đồng ý!";
+        gestureIcon = "fa-thumbs-up";
+        count = 1;
+      } else if (isOne) {
+        gesture = "ONE";
+        gestureName = "Số 1 (Chỉ ngón trỏ) ☝️";
+        gestureMeaning = "Bạn đang giơ chính xác 1 ngón tay!";
+        gestureIcon = "fa-hand-point-up";
+      } else if (isPeace) {
+        gesture = "PEACE";
+        gestureName = "Số 2 (Chữ V / Hòa bình) ✌️";
+        gestureMeaning = "Biểu tượng chiến thắng & hòa bình!";
+        gestureIcon = "fa-peace";
+      } else if (isRock) {
+        gesture = "ROCK";
+        gestureName = "Rock On / Sừng Quỷ 🤘";
+        gestureMeaning = "Phong cách Rock & Roll mạnh mẽ!";
+        gestureIcon = "fa-hand-back-fist";
+      } else {
+        switch (count) {
+          case 0:
+            gesture = "FIST";
+            gestureName = "Nắm đấm ✊ (0 ngón)";
+            gestureMeaning = "Bàn tay đang nắm lại";
+            gestureIcon = "fa-hand-back-fist";
+            break;
+          case 1:
+            gesture = "ONE_GENERIC";
+            gestureName = "Số 1 ☝️";
+            gestureMeaning = "Đang giơ 1 ngón tay";
+            gestureIcon = "fa-hand-point-up";
+            break;
+          case 2:
+            gesture = "TWO_GENERIC";
+            gestureName = "Số 2 ✌️";
+            gestureMeaning = "Đang giơ 2 ngón tay";
+            gestureIcon = "fa-hand";
+            break;
+          case 3:
+            gesture = "THREE";
+            gestureName = "Số 3 🤟";
+            gestureMeaning = "Đang giơ 3 ngón tay";
+            gestureIcon = "fa-hand";
+            break;
+          case 4:
+            gesture = "FOUR";
+            gestureName = "Số 4 🖖";
+            gestureMeaning = "Đang giơ 4 ngón tay";
+            gestureIcon = "fa-hand";
+            break;
+          case 5:
+            gesture = "FIVE";
+            gestureName = "Số 5 🖐️ (Xòe bàn tay)";
+            gestureMeaning = "Chào bạn! Xòe trọn vẹn 5 ngón tay";
+            gestureIcon = "fa-hand";
+            break;
+          default:
+            gesture = "UNKNOWN";
+            gestureName = `Số ${count}`;
+            gestureMeaning = `Nhận diện ${count} ngón tay`;
+        }
+      }
+
+      return { state, count, gesture, gestureName, gestureMeaning, gestureIcon };
+    }
+
+    // --- Update UI with detected information ---
+    function updateUI(analysis, hasHand, handedness) {
+      if (!hasHand) {
+        detectedHandLabel.textContent = "Chờ bàn tay...";
+        bigNumberEl.textContent = "-";
+        bigNumberEl.className = "text-8xl sm:text-9xl font-black text-slate-600 font-mono tracking-tighter drop-shadow-lg scale-95 transition-all duration-200";
+        gestureNameEl.textContent = "Không có bàn tay";
+        gestureMeaningEl.textContent = "Hãy đưa bàn tay vào trước ống kính camera";
+        gestureIconEl.innerHTML = `<i class="fa-solid fa-spinner animate-spin text-slate-400"></i>`;
+        
+        // Reset finger cards
+        ['thumb', 'index', 'middle', 'ring', 'pinky'].forEach(f => {
+          const card = fingerCards[f];
+          card.classList.remove('bg-indigo-900/40', 'border-indigo-500/60', 'text-indigo-300', 'shadow-lg', 'shadow-indigo-500/20');
+          card.classList.add('bg-slate-900/80', 'border-slate-800');
+          const dot = card.querySelector('.finger-dot');
+          dot.className = "finger-dot w-3 h-3 rounded-full bg-slate-700";
+          const icon = card.querySelector('i');
+          icon.className = icon.className.replace('text-indigo-400', 'text-slate-500');
+        });
+        return;
+      }
+
+      const { state, count, gesture, gestureName, gestureMeaning, gestureIcon } = analysis;
+
+      // Update Hand Label
+      detectedHandLabel.textContent = `Tay ${handedness === 'Right' ? 'Phải' : 'Trái'} (${count} ngón)`;
+
+      // Update Big Number & Animations
+      if (lastFingerCount !== count || lastGesture !== gesture) {
+        bigNumberEl.textContent = count;
+        bigNumberEl.classList.remove('scale-100');
+        bigNumberEl.classList.add('scale-125');
+        setTimeout(() => {
+          bigNumberEl.classList.remove('scale-125');
+          bigNumberEl.classList.add('scale-100');
+        }, 150);
+
+        // Sound effect on change
+        playCountSound(count);
+        lastFingerCount = count;
+        lastGesture = gesture;
+      }
+
+      // Color Theme by number
+      const colors = {
+        0: 'from-slate-400 via-slate-300 to-slate-500',
+        1: 'from-emerald-400 via-teal-300 to-cyan-500', // Highlight Special 1
+        2: 'from-sky-400 via-indigo-300 to-blue-500',
+        3: 'from-amber-400 via-yellow-300 to-orange-500',
+        4: 'from-purple-400 via-fuchsia-300 to-pink-500',
+        5: 'from-rose-400 via-pink-300 to-red-500'
+      };
+      
+      const glowColors = {
+        0: 'rgba(148, 163, 184, 0.2)',
+        1: 'rgba(16, 185, 129, 0.35)', // Bright green/emerald glow for 1
+        2: 'rgba(56, 189, 248, 0.35)',
+        3: 'rgba(251, 191, 36, 0.35)',
+        4: 'rgba(192, 132, 252, 0.35)',
+        5: 'rgba(244, 63, 94, 0.35)'
+      };
+
+      bigNumberEl.className = `text-8xl sm:text-9xl font-black text-transparent bg-clip-text bg-gradient-to-b ${colors[count] || colors[1]} font-mono tracking-tighter drop-shadow-lg transition-all duration-200`;
+      ambientGlow.style.backgroundColor = glowColors[count] || glowColors[1];
+
+      // Badge & Meaning
+      gestureNameEl.textContent = gestureName;
+      gestureMeaningEl.textContent = gestureMeaning;
+      gestureIconEl.innerHTML = `<i class="fa-solid ${gestureIcon}"></i>`;
+
+      // Update Individual Finger Indicators
+      Object.keys(state).forEach(f => {
+        const isUp = state[f];
+        const card = fingerCards[f];
+        const dot = card.querySelector('.finger-dot');
+        const icon = card.querySelector('i');
+
+        if (isUp) {
+          card.classList.add('bg-indigo-900/40', 'border-indigo-500/60', 'shadow-lg', 'shadow-indigo-500/20');
+          card.classList.remove('bg-slate-900/80', 'border-slate-800');
+          dot.className = "finger-dot w-3 h-3 rounded-full bg-indigo-400 shadow-[0_0_8px_#818cf8]";
+          icon.classList.remove('text-slate-500');
+          icon.classList.add('text-indigo-400');
+        } else {
+          card.classList.remove('bg-indigo-900/40', 'border-indigo-500/60', 'shadow-lg', 'shadow-indigo-500/20');
+          card.classList.add('bg-slate-900/80', 'border-slate-800');
+          dot.className = "finger-dot w-3 h-3 rounded-full bg-slate-700";
+          icon.classList.remove('text-indigo-400');
+          icon.classList.add('text-slate-500');
+        }
+      });
+    }
+
+    // --- On Hand Results Callback from MediaPipe ---
+    function onResults(results) {
+      // Calculate FPS
+      frameCount++;
+      const now = performance.now();
+      if (now - lastTime >= 1000) {
+        fps = Math.round((frameCount * 1000) / (now - lastTime));
+        fpsBadge.textContent = `${fps} FPS`;
+        fpsBadge.classList.remove('hidden');
+        frameCount = 0;
+        lastTime = now;
+      }
+
+      // Hide loading screen on first valid frame
+      if (loadingScreen.style.display !== 'none') {
+        loadingScreen.style.opacity = '0';
+        setTimeout(() => loadingScreen.style.display = 'none', 300);
+        statusDot.classList.remove('bg-amber-400', 'animate-ping');
+        statusDot.classList.add('bg-emerald-400');
+        statusText.textContent = "AI Sẵn sàng";
+      }
+
+      // Set canvas dimensions matching the input video stream
+      if (canvasElement.width !== videoElement.videoWidth || canvasElement.height !== videoElement.videoHeight) {
+        canvasElement.width = videoElement.videoWidth || 640;
+        canvasElement.height = videoElement.videoHeight || 480;
+      }
+
+      canvasCtx.save();
+      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+      if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        const primaryHand = results.multiHandLandmarks[0];
+        const handedness = (results.multiHandedness && results.multiHandedness[0]) ? results.multiHandedness[0].label : 'Right';
+
+        // Draw Skeleton overlay if enabled
+        if (showSkeleton) {
+          // Connectors
+          drawConnectors(canvasCtx, primaryHand, HAND_CONNECTIONS, {
+            color: '#6366f1',
+            lineWidth: 4
+          });
+          // Landmarks / Joint points
+          drawLandmarks(canvasCtx, primaryHand, {
+            color: '#ec4899',
+            fillColor: '#ffffff',
+            lineWidth: 2,
+            radius: (data) => {
+              // Highlight finger tips with bigger radius
+              const tips = [4, 8, 12, 16, 20];
+              return tips.includes(data.index) ? 7 : 4;
+            }
+          });
+        }
+
+        // Run Finger Recognition Logic
+        const analysis = analyzeHand(primaryHand, handedness);
+        updateUI(analysis, true, handedness);
+
+      } else {
+        updateUI(null, false, null);
+      }
+
+      canvasCtx.restore();
+    }
+
+    // --- Initialize MediaPipe Hands & Camera ---
+    function initializeHandTracker() {
+      if (camera) {
+        try { camera.stop(); } catch(e) {}
+      }
+
+      hands = new Hands({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+      });
+
+      hands.setOptions({
+        maxNumHands: 1,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.65,
+        minTrackingConfidence: 0.6
+      });
+
+      hands.onResults(onResults);
+
+      camera = new Camera(videoElement, {
+        onFrame: async () => {
+          await hands.send({ image: videoElement });
+        },
+        width: 640,
+        height: 480
+      });
+
+      // Tự động yêu cầu và bật camera ngay khi khởi động
+      camera.start().then(() => {
+        videoElement.play().catch(() => {});
+      }).catch((err) => {
+        console.error("Camera start error:", err);
+        loadingScreen.classList.add('hidden');
+        errorScreen.classList.remove('hidden');
+        errorMessage.textContent = err.message || "Không thể truy cập camera. Vui lòng cho phép quyền webcam trên trình duyệt.";
+        statusText.textContent = "Lỗi Camera";
+        statusDot.classList.replace('bg-amber-400', 'bg-rose-500');
+      });
+    }
+
+    function startApp() {
+      errorScreen.classList.add('hidden');
+      loadingScreen.style.display = 'flex';
+      loadingScreen.style.opacity = '1';
+      initializeHandTracker();
+    }
+
+    // Tự động chạy ngay khi DOM đã sẵn sàng
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+      startApp();
+    } else {
+      window.addEventListener('DOMContentLoaded', startApp);
+    }
+  </script>
+</body>
+</html>
