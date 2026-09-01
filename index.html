@@ -142,12 +142,24 @@
 
           <!-- Loader -->
           <div id="loadingScreen" class="absolute inset-0 bg-black/90 flex flex-col items-center justify-center z-30 transition-opacity duration-500">
-            <i class="fa-solid fa-microchip text-4xl text-cyan-500 mb-4 animate-bounce"></i>
-            <h2 class="text-cyan-400 font-bold mb-2">LOADING NEURAL NETWORKS</h2>
-            <div class="w-48 h-1 bg-slate-800 rounded overflow-hidden">
-              <div class="w-full h-full bg-cyan-500 animate-[pulse_1s_ease-in-out_infinite]"></div>
+            
+            <!-- Manual Start Button (Added to fix autoplay/permission issues) -->
+            <div id="startPrompt" class="flex flex-col items-center justify-center">
+              <i class="fa-solid fa-power-off text-6xl text-cyan-600 mb-6 hover:text-cyan-400 cursor-pointer transition-colors duration-300 animate-pulse" id="btnStartSystem"></i>
+              <h2 class="text-cyan-400 font-bold mb-2 text-xl tracking-widest">CLICK TO BOOT SYSTEM</h2>
+              <p class="text-[10px] text-slate-500 mt-2 max-w-xs text-center">Requires Camera Permission. Do not block prompt.</p>
             </div>
-            <p class="text-[10px] text-slate-500 mt-2">Loading FaceMesh & Hands Modules...</p>
+
+            <!-- Actual Loading UI (Hidden initially) -->
+            <div id="loadingProgress" class="hidden flex-col items-center justify-center w-full">
+              <i class="fa-solid fa-microchip text-4xl text-cyan-500 mb-4 animate-bounce"></i>
+              <h2 id="loadingText" class="text-cyan-400 font-bold mb-2">LOADING NEURAL NETWORKS</h2>
+              <div class="w-48 h-1 bg-slate-800 rounded overflow-hidden">
+                <div class="w-full h-full bg-cyan-500 animate-[pulse_1s_ease-in-out_infinite]"></div>
+              </div>
+              <p id="loadingSubtext" class="text-[10px] text-slate-500 mt-2">Loading FaceMesh & Hands Modules...</p>
+            </div>
+            
           </div>
         </div>
 
@@ -287,8 +299,13 @@
     const DOM = {
       video: document.getElementById('webcam'),
       canvas: document.getElementById('canvasOverlay'),
-      ctx: document.getElementById('canvasOverlay').getContext('2d'),
+      ctx: document.getElementById('canvasOverlay').getContext('2d', { willReadFrequently: true }),
       loading: document.getElementById('loadingScreen'),
+      startPrompt: document.getElementById('startPrompt'),
+      loadingProgress: document.getElementById('loadingProgress'),
+      loadingText: document.getElementById('loadingText'),
+      loadingSubtext: document.getElementById('loadingSubtext'),
+      btnStartSystem: document.getElementById('btnStartSystem'),
       sysStatus: document.getElementById('sysStatus'),
       fpsBadge: document.getElementById('fpsBadge'),
       logArea: document.getElementById('terminalLog'),
@@ -563,6 +580,12 @@
     // ==========================================
     function checkSystemReady() {
       STATE.modelsReady++;
+      
+      if (STATE.modelsReady === 1) {
+          DOM.loadingSubtext.textContent = "Hands Module Ready. Waiting for FaceMesh...";
+          sysLog("Hands Module Ready.", "ok");
+      }
+
       if (STATE.modelsReady >= 2) {
         DOM.loading.style.opacity = '0';
         setTimeout(() => DOM.loading.style.display = 'none', 500);
@@ -576,47 +599,74 @@
     }
 
     async function startSystem() {
-      sysLog("Initializing MediaPipe Hands (v2)...", "info");
-      const hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
-      hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.6 });
-      hands.onResults(res => { 
-        STATE.latestHands = res; 
-        if(STATE.modelsReady < 2) checkSystemReady(); 
-      });
+      // Switch UI from Start button to Loading bar
+      DOM.startPrompt.classList.add('hidden');
+      DOM.loadingProgress.classList.remove('hidden');
+      DOM.loadingProgress.classList.add('flex');
+      
+      sysLog("Boot sequence initialized by user.", "info");
 
-      sysLog("Initializing MediaPipe FaceMesh...", "info");
-      const faceMesh = new FaceMesh({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}` });
-      faceMesh.setOptions({ maxNumFaces: 1, refineLandmarks: true, minDetectionConfidence: 0.7, minTrackingConfidence: 0.6 });
-      faceMesh.onResults(res => { 
-        STATE.latestFace = res; 
-        if(STATE.modelsReady < 2) checkSystemReady();
-      });
-
-      // Camera feed setup
-      const camera = new Camera(DOM.video, {
-        onFrame: async () => {
-          // Send video frame to BOTH models concurrently
-          if(DOM.video.videoWidth > 0) {
-            await Promise.all([
-              hands.send({ image: DOM.video }),
-              faceMesh.send({ image: DOM.video })
-            ]);
-          }
-        },
-        width: 640, height: 480
-      });
-
-      camera.start().then(() => {
-        DOM.video.play().catch(()=>{});
-        sysLog("Camera hardware engaged.", "ok");
-      }).catch(err => {
+      try {
+        // Test camera explicitly before loading heavy models
+        sysLog("Requesting Camera Permissions...", "warn");
+        DOM.loadingSubtext.textContent = "Awaiting Camera Permissions...";
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+        // Release immediately, just needed to check permission
+        stream.getTracks().forEach(track => track.stop()); 
+        sysLog("Camera Access Granted.", "ok");
+        DOM.loadingSubtext.textContent = "Camera authorized. Fetching AI Models (Might take 10-20s)...";
+      } catch (err) {
         sysLog(`Camera Error: ${err.message}`, "alert");
-        DOM.sysStatus.textContent = "CAM FAULT";
+        showError("CAMERA ACCESS DENIED", "Please allow camera permissions in your browser URL bar.");
+        return; // Halt boot
+      }
+
+      try {
+        sysLog("Initializing MediaPipe Hands...", "info");
+        const hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/${file}` });
+        hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
+        hands.onResults(res => { 
+          STATE.latestHands = res; 
+          if(STATE.modelsReady < 2) checkSystemReady(); 
+        });
+
+        sysLog("Initializing MediaPipe FaceMesh...", "info");
+        const faceMesh = new FaceMesh({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/${file}` });
+        faceMesh.setOptions({ maxNumFaces: 1, refineLandmarks: true, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
+        faceMesh.onResults(res => { 
+          STATE.latestFace = res; 
+          if(STATE.modelsReady < 2) checkSystemReady();
+        });
+
+        // Camera feed setup using MediaPipe Camera Utils
+        const camera = new Camera(DOM.video, {
+          onFrame: async () => {
+            if(DOM.video.videoWidth > 0 && STATE.modelsReady >= 0) {
+                // Fire and forget promises to prevent blocking
+                hands.send({ image: DOM.video }).catch(e => console.error(e));
+                faceMesh.send({ image: DOM.video }).catch(e => console.error(e));
+            }
+          },
+          width: 640, height: 480
+        });
+
+        await camera.start();
+        DOM.video.play().catch(()=>{});
+        sysLog("Camera hardware engaged and feeding AI.", "ok");
+
+      } catch (err) {
+        sysLog(`System Load Error: ${err.message}`, "alert");
+        showError("NETWORK OR SCRIPT ERROR", "Failed to download AI models. Check internet connection.");
+      }
+    }
+
+    function showError(title, msg) {
+        DOM.sysStatus.textContent = "SYS FAULT";
         DOM.sysStatus.className = "text-red-500 font-bold animate-pulse";
-        DOM.loading.innerHTML = `<i class="fa-solid fa-triangle-exclamation text-4xl text-red-500 mb-4"></i>
-                                 <h2 class="text-red-400 font-bold mb-2">CAMERA ACCESS DENIED</h2>
-                                 <p class="text-[10px] text-slate-500">Please check browser permissions.</p>`;
-      });
+        DOM.loadingProgress.innerHTML = `<i class="fa-solid fa-triangle-exclamation text-4xl text-red-500 mb-4"></i>
+                                 <h2 class="text-red-400 font-bold mb-2">${title}</h2>
+                                 <p class="text-[10px] text-slate-500 text-center max-w-xs">${msg}</p>
+                                 <button onclick="location.reload()" class="mt-4 px-3 py-1 border border-cyan-500 text-cyan-500 hover:bg-cyan-900/30">RELOAD PAGE</button>`;
     }
 
     // Toggle Buttons
@@ -632,8 +682,12 @@
     };
     document.getElementById('toggleEngineBtn').onclick = () => location.reload();
 
-    // Boot Up
-    window.addEventListener('DOMContentLoaded', startSystem);
+    // Attach boot function to button
+    DOM.btnStartSystem.addEventListener('click', () => {
+        // Need user gesture to start AudioContext reliably
+        if(audioCtx.state === 'suspended') audioCtx.resume();
+        startSystem();
+    });
 
   </script>
 </body>
